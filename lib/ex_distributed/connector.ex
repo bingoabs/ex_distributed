@@ -18,20 +18,35 @@ defmodule ExDistributed.Connector do
     Logger.info("Remote Node force reset current node status: #{inspect status}")
     GenServer.call(__MODULE__, {:reset, status})
   end
+
+  def remote_start_server(names) do
+    Logger.info("Receive remote start server: #{inspect names}")
+    for name <- names do
+      ExDistributed.Service.start_link(name)
+    end
+  end
   @doc "Start the server between nodes"
   def start_global_servers(names) do
     status = GenServer.call(__MODULE__, :get_status)
     actived_nodes = Enum.filter(status, fn {node_name, {node_status, _}} ->
       node_status
     end)
-    tasks = Enum.chunk_every(names, actived_nodes)
-    # start self part
-    # delte self part
-    # send to other nodes
+    [left | tasks] = Enum.chunk_every(names, actived_nodes)
+    remote_actived_nodes = actived_nodes -- [Node.self()]
+    # start self node servers
+    remote_start_server(left)
+    # start remote nodes servers
+    for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do
+      :rpc.call(node_name, ExDistributed.Connector, :remote_start_server, [servers])
+    end
+  end
+
+  defp select_core_node() do
+    #TODO
   end
 
   defp restart_downnode_servers(servers) do
-    core_node = select_core_node(node_name)
+    core_node = select_core_node()
     if core_node == Node.self() do
       Logger.info("Current Node #{inspect core_node} selected")
       Logger.info("start downnode servers: #{inspect servers}")
@@ -40,7 +55,7 @@ defmodule ExDistributed.Connector do
   end
 
   defp update_new_node_state(new_node, state) do
-    core_node = select_core_node(node_name)
+    core_node = select_core_node()
     if Node.self() === core_node do
       Logger.info("Current Node #{inspect core_node} selected")
       Logger.info("start replace new node status")
