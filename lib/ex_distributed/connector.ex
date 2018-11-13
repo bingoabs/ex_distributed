@@ -3,6 +3,8 @@ defmodule ExDistributed.Connector do
   Used to connect between nodes.
   Like distrubute the tasks
   and start services when some node down
+  # TODO:
+  all data is response by the leaders!
   """
   require Logger
   use GenServer
@@ -41,12 +43,12 @@ defmodule ExDistributed.Connector do
     end
   end
 
-  defp select_core_node() do
+  defp select_leader_node() do
     #TODO
   end
 
   defp restart_downnode_servers(servers) do
-    core_node = select_core_node()
+    core_node = select_leader_node()
     if core_node == Node.self() do
       Logger.info("Current Node #{inspect core_node} selected")
       Logger.info("start downnode servers: #{inspect servers}")
@@ -55,7 +57,7 @@ defmodule ExDistributed.Connector do
   end
 
   defp update_new_node_state(new_node, state) do
-    core_node = select_core_node()
+    core_node = select_leader_node()
     if Node.self() === core_node do
       Logger.info("Current Node #{inspect core_node} selected")
       Logger.info("start replace new node status")
