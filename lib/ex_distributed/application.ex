@@ -10,7 +10,8 @@ defmodule ExDistributed.Application do
     children = [
       # Starts a worker by calling: ExDistributed.Worker.start_link(arg)
       # {ExDistributed.Worker, arg},
-      {ExDistributed.Connector, []}
+      {ExDistributed.ServerManager, [], name: ExDistributed.ServerManager},
+      {ExDistributed.Election, [], name: ExDistributed.Election}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
