@@ -22,19 +22,19 @@ defmodule ExDistributed.ServerManager do
     Logger.info("Remote Node force reset current node #{inspect Node.self} status: #{inspect status}")
     GenServer.call(__MODULE__, {:reset, status})
   end
-  def remote_start_server(servers) do
+  def start_server(servers) do
     Logger.info("Node #{inspect Node.self()} receive remote start server: #{inspect servers}")
     GenServer.cast({:start_server, servers})
   end
   @doc "Start the server between nodes"
-  def start_global_servers(servers) do
+  defp start_global_servers(servers) do
     active_nodes = NodeState.get_active_nodes()
     [left | tasks] = Enum.chunk_every(servers, actived_nodes)
     remote_actived_nodes = actived_nodes -- [Node.self()]
     # start self node servers
     # start remote nodes servers
     for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do
-      :rpc.call(node_name, ExDistributed.ServerManager, :remote_start_server, [servers])
+      :rpc.call(node_name, ExDistributed.ServerManager, :start_server, [servers])
     end
     Enum.reduce(left, [], fn server, acc ->
       case ExDistributed.Service.start_link(server) do
