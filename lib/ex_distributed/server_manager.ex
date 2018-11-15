@@ -5,8 +5,6 @@ defmodule ExDistributed.ServerManager do
   """
   require Logger
   use GenServer
-  # alias ExDistributed.Leader
-  # alias ExDistributed.NodeState
   @nodes Application.get_env(:ex_distributed, :nodes)
 
   # client

@@ -6,7 +6,7 @@ defmodule ExDistributed.NodeState do
   """
   use GenServer
   require Logger
-  alias ExDistributed.Leader
+  alias ExDistributed.LeaderClient
   # alias ExDistributed.ServerManager
   @nodes Application.get_env(:ex_distributed, :nodes)
   @refresh 1_000
@@ -65,14 +65,14 @@ defmodule ExDistributed.NodeState do
   @doc "Select new leader and refresh the nodes status"
   def handle_info({:nodeup, node_name}, state) do
     Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_name)} up")
-    Leader.sync_leader(node_name)
+    LeaderClient.sync_leader(node_name)
     {:noreply, Map.put(state, node_name, true)}
   end
 
   @doc "Restart server when nodedown and check the leader status"
   def handle_info({:nodedown, down_node}, state) do
     Logger.warn("Node #{inspect(Node.self())} receive #{inspect(down_node)} down")
-    Leader.check_leader_and_restart_services(down_node)
+    LeaderClient.check_leader_and_restart_services(down_node)
     {:noreply, Map.put(state, down_node, false)}
   end
 

@@ -1,4 +1,4 @@
-defmodule ExDistributed.Leader do
+defmodule ExDistributed.LeaderClient do
   @moduledoc """
   Store the leader and do the election between nodes
 
@@ -12,6 +12,7 @@ defmodule ExDistributed.Leader do
   require Logger
   alias ExDistributed.Utils
   alias ExDistributed.NodeState
+  alias ExDistributed.LeaderStore
   alias ExDistributed.ServerManager
 
   @init_status "init"
@@ -19,13 +20,12 @@ defmodule ExDistributed.Leader do
   @normal_status "normal"
   @update_leader_delay 1_000
   @down_delay 1_000
-  def start_link(_) do
-    GenServer.start_link(__MODULE__, [], name: __MODULE__)
-  end
 
-  def reset(leader) do
-    GenServer.cast(__MODULE__, {:reset, leader})
-  end
+  @doc "Only used in same node"
+  def reset(state), do: LeaderStore.set(state)
+  @doc "Available between nodes like :rpc"
+  def get_current_state(), do: LeaderStore.get()
+  def get_current_leader(), do: LeaderStore.get()[:leader]
 
   @doc """
   To follower downnode, leader will do somethin
@@ -34,7 +34,7 @@ defmodule ExDistributed.Leader do
   """
   def check_leader_and_restart_services(down_node) do
     # avoid to block the downnode status update
-    Process.send_after(__MODULE__, {:downnode, down_node}, @down_delay)
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/2, [down_node])
   end
 
   @doc """
@@ -43,34 +43,9 @@ defmodule ExDistributed.Leader do
     exist election status -> then wait until election finish, then update leader
     all init or normal status -> start a election
   """
-  def sync_leader(node_name) do
+  def sync_leader(up_node) do
     # avoid to block the NodeState process
-    Process.send_after(__MODULE__, {:sync_leader, node_name}, @update_leader_delay)
-  end
-
-  def get_current_state(),
-    do: GenServer.call(__MODULE__, :get_status)
-
-  def get_current_leader(),
-    do: GenServer.call(__MODULE__, :get_status).leader
-
-  # callback
-  def init(_) do
-    {:ok,
-     %{
-       leader: Node.self(),
-       status: @init_status,
-       # main property when elections
-       updated_at: Utils.current()
-     }}
-  end
-
-  def handle_call(:get_status, _from, state) do
-    {:reply, state, state}
-  end
-
-  def handle_cast({:reset, leader}, _state) do
-    {:noreply, %{leader: leader, status: @normal_status, updated_at: Utils.current()}}
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.sync_leader/2, [up_node])
   end
 
   def handle_info({:sync_leader, up_node}, state) do
@@ -208,51 +183,5 @@ defmodule ExDistributed.Leader do
     end
 
     ServerManager.start_servers(left)
-  end
-end
-
-defmodule ExDistributed.LeaderStore do
-  @moduledoc """
-  Store the leader info, avoid to block 
-  the `leader status` query between nodes
-
-  TODO:
-  1. make the Leader only invoke the LeaderStore
-  2. make the leader status change more test
-  """
-  use GenServer
-  alias ExDistributed.Utils
-
-  def start_link(_) do
-    GenServer.start_link(__MODULE__, [], name: __MODULE__)
-  end
-
-  @doc "Only used in same node"
-  def set(state) do
-    GenServer.cast(__MODULE__, {:set, state})
-  end
-
-  @doc "Available between nodes like :rpc"
-  def get() do
-    GenServer.call(__MODULE__, :get)
-  end
-
-  # callback
-  def __init__(_) do
-    {:ok,
-     %{
-       leader: Node.self(),
-       status: @init_status,
-       # main property when elections
-       updated_at: Utils.current()
-     }}
-  end
-
-  def handle_cast({:set, new_state}, old_state) do
-    {:noreply, new_state}
-  end
-
-  def handle_call(:get, _from, state) do
-    {:reply, state, state}
   end
 end
