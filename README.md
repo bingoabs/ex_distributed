@@ -9,7 +9,8 @@
         node less than half, then the node should halt self
         (this way will make reconnection easily after connection broken)
         5. node select will have a time interval, the Leader module record the Node number change, if 10s the node nnumbers not change, then start do the elections(make sure the election happen when the cluster stable)
-        6. when in election, new up node need to wait the election finish, and then update the leader after election
+        6. (option) when in election, new up node need to wait the election finish, and then update the leader after election
+        7. (option) or maybe the new up node should into the election.
 
 ## Installation
 
