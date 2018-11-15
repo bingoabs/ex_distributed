@@ -27,6 +27,7 @@ defmodule ExDistributed.NodeState do
     Enum.filter(state, fn {_, node_status} ->
       node_status == false
     end)
+    |> Enum.map(fn {node_name, _} -> node_name end)
   end
 
   # callback
@@ -37,7 +38,7 @@ defmodule ExDistributed.NodeState do
     {:ok, Map.put(state, Node.self(), true)}
   end
 
-  def handle_call(:get_status, state) do
+  def handle_call(:get_status, _from, state) do
     {:reply, state, state}
   end
 

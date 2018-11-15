@@ -10,8 +10,9 @@ defmodule ExDistributed.Leader do
   """
   use GenServer
   require Logger
-  alias ExDistributed.NodeState
   alias ExDistributed.Utils
+  alias ExDistributed.NodeState
+  alias ExDistributed.ServerManager
 
   @init_status "init"
   @election_status "election"
@@ -64,7 +65,7 @@ defmodule ExDistributed.Leader do
      }}
   end
 
-  def handle_call(:get_state, _from, state) do
+  def handle_call(:get_status, _from, state) do
     {:reply, state, state}
   end
 
@@ -78,8 +79,9 @@ defmodule ExDistributed.Leader do
         # 1. init status two node how to set leader
         # 2. a new node join a stable cluster that already has a leader
         # 3. consider node up when election is running
-
+        Logger.error("start get actived nodes: #{inspect(state)}")
         nodes_state = get_actived_nodes_state(state)
+        Logger.error("get actived nodes: #{inspect(nodes_state)}")
 
         nodes_status =
           Enum.map(nodes_state, fn {_, state} ->
@@ -94,6 +96,12 @@ defmodule ExDistributed.Leader do
             Enum.min_by(nodes_state, fn {_node_name, state} ->
               state.updated_at
             end)
+
+          if Node.self() == leader_node do
+            for {node_name, _} <- nodes_state do
+              :rpc.call(node_name, __MODULE__, :reset, [Node.self()])
+            end
+          end
 
           {:noreply,
            %{
@@ -127,7 +135,6 @@ defmodule ExDistributed.Leader do
             end)
 
           if Node.self() == leader do
-            # new leader update the all cluster 
             # for {node_name, _} <- nodes_state do
             #   :rpc.call(node_name, __MODULE__, :reset, [Node.self()])
             # end
@@ -183,6 +190,7 @@ defmodule ExDistributed.Leader do
     NodeState.get_active_nodes()
     |> Kernel.--([Node.self()])
     |> Enum.map(fn node_name ->
+      Logger.error("do rpc: #{inspect(node_name)}")
       node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
       {node_name, node_state}
     end)
@@ -196,9 +204,55 @@ defmodule ExDistributed.Leader do
     remote_actived_nodes = actived_nodes -- [Node.self()]
 
     for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do
-      :rpc.call(node_name, ExDistributed.ServerManager, :start_servers, [servers])
+      :rpc.call(node_name, ServerManager, :start_servers, [servers])
     end
 
-    ExDistributed.ServerManager.start_servers(left)
+    ServerManager.start_servers(left)
+  end
+end
+
+defmodule ExDistributed.LeaderStore do
+  @moduledoc """
+  Store the leader info, avoid to block 
+  the `leader status` query between nodes
+
+  TODO:
+  1. make the Leader only invoke the LeaderStore
+  2. make the leader status change more test
+  """
+  use GenServer
+  alias ExDistributed.Utils
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  @doc "Only used in same node"
+  def set(state) do
+    GenServer.cast(__MODULE__, {:set, state})
+  end
+
+  @doc "Available between nodes like :rpc"
+  def get() do
+    GenServer.call(__MODULE__, :get)
+  end
+
+  # callback
+  def __init__(_) do
+    {:ok,
+     %{
+       leader: Node.self(),
+       status: @init_status,
+       # main property when elections
+       updated_at: Utils.current()
+     }}
+  end
+
+  def handle_cast({:set, new_state}, old_state) do
+    {:noreply, new_state}
+  end
+
+  def handle_call(:get, _from, state) do
+    {:reply, state, state}
   end
 end
