@@ -1,12 +1,13 @@
 defmodule ExDistributed.Service do
   use GenServer
   require Logger
+
   @moduledoc """
   Register and start servers in cluster
   """
   # Client
   def start(name) do
-    Logger.info("Node #{inspect Node.self} start server #{inspect name}")
+    Logger.info("Node #{inspect(Node.self())} start server #{inspect(name)}")
     start_link(name)
   end
 
@@ -21,6 +22,7 @@ defmodule ExDistributed.Service do
   def start_link(name) do
     GenServer.start_link(__MODULE__, %{}, name: {:global, name})
   end
+
   # Server (callbacks)
   @impl true
   def init(text) do
@@ -34,6 +36,6 @@ defmodule ExDistributed.Service do
 
   @impl true
   def terminate(:shutdown, state) do
-    Logger.info("Node #{inspect Node.self()} stop server #{inspect name}")
+    Logger.info("Node #{inspect(Node.self())} stop server #{inspect(name)}")
   end
 end

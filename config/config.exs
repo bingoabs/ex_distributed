@@ -29,5 +29,4 @@ use Mix.Config
 #
 #     import_config "#{Mix.env()}.exs"
 
-config :ex_distributed, :nodes,
-  [:node1@bingo, :node2@bingo, :node3@bingo]
+config :ex_distributed, :nodes, [:node1@bingo, :node2@bingo, :node3@bingo]
