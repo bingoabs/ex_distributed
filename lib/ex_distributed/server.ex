@@ -3,39 +3,45 @@ defmodule ExDistributed.Service do
   require Logger
 
   @moduledoc """
-  Register and start servers in cluster
+  Record and delete the names in cluster
   """
   # Client
-  def start(name) do
-    Logger.info("Node #{inspect(Node.self())} start server #{inspect(name)}")
-    start_link(name)
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  def add(name) do
+    GenServer.call(__MODULE__, {:add, name})
   end
 
   def show(name) do
-    GenServer.call(name, :show)
+    GenServer.call(__MODULE__, :show)
   end
 
-  def shutdown(name) do
-    GenServer.stop(name, :shutdown)
-  end
-
-  def start_link(name) do
-    GenServer.start_link(__MODULE__, %{}, name: {:global, name})
+  def delete(name) do
+    GenServer.cast(__MODULE__, {:pop, name})
   end
 
   # Server (callbacks)
   @impl true
-  def init(text) do
-    {:ok, text}
+  def init(_) do
+    {:ok, []}
   end
 
   @impl true
-  def handle_call(:show, _from, text) do
-    {:reply, text, text}
+  def handle_call({:add, name}, _from, names) do
+    names = names ++ [name]
+    {:reply, names, name}
   end
 
   @impl true
-  def terminate(:shutdown, state) do
-    Logger.info("Node #{inspect(Node.self())} stop server #{inspect(name)}")
+  def handle_call(:show, _from, names) do
+    {:reply, names, names}
+  end
+
+  @impl true
+  def handle_cast({:deleten, name}, names) do
+    names = names -- [name]
+    {:noreply, names}
   end
 end

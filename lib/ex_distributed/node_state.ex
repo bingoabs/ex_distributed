@@ -76,8 +76,8 @@ defmodule ExDistributed.NodeState do
 
   @doc "Select new leader and refresh the nodes status"
   def handle_info({:nodeup, node_name}, state) do
-    Logger.info("Node #{inspect(Node.self())} connect #{inspect(node_name)}")
-    Leader.update_leader()
+    Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_name)} up")
+    Leader.sync_leader(node_name)
     {:noreply, Map.put(state, node_name, true)}
   end
 
