@@ -11,18 +11,29 @@ defmodule ExDistributed.Leader do
   use GenServer
   require Logger
   alias ExDistributed.NodeState
+  alias ExDistributed.Utils
 
   @init_status "init"
   @election_status "election"
   @normal_status "normal"
   @update_leader_delay 1_000
-
+  @down_delay 1_000
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
   def reset(leader) do
-    GenServer.cast({:reset, leader})
+    GenServer.cast(__MODULE__, {:reset, leader})
+  end
+
+  @doc """
+  To follower downnode, leader will do somethin
+  if leader download, then into election
+  after election, leader will update node servers in cluster
+  """
+  def check_leader_and_restart_services(down_node) do
+    # avoid to block the downnode status update
+    Process.send_after(__MODULE__, {:downnode, down_node}, @down_delay)
   end
 
   @doc """
@@ -36,7 +47,12 @@ defmodule ExDistributed.Leader do
     Process.send_after(__MODULE__, {:sync_leader, node_name}, @update_leader_delay)
   end
 
-  def get_current_state(), do: GenServer.call(:get_status)
+  def get_current_state(),
+    do: GenServer.call(__MODULE__, :get_status)
+
+  def get_current_leader(),
+    do: GenServer.call(__MODULE__, :get_status).leader
+
   # callback
   def init(_) do
     {:ok,
@@ -48,14 +64,12 @@ defmodule ExDistributed.Leader do
      }}
   end
 
-  defp get_actived_nodes_state(cstate) do
-    NodeState.get_active_nodes()
-    |> Kernel.--([Node.self()])
-    |> Enum.map(fn node_name ->
-      node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
-      {node_name, node_state}
-    end)
-    |> Kernel.++([{Node.self(), cstate}])
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
+  end
+
+  def handle_cast({:reset, leader}, _state) do
+    {:noreply, %{leader: leader, status: @normal_status, updated_at: Utils.current()}}
   end
 
   def handle_info({:sync_leader, up_node}, state) do
@@ -77,7 +91,7 @@ defmodule ExDistributed.Leader do
           Logger.info("Node #{Node.self()} selects first node as leader")
 
           {leader_node, _} =
-            Enum.min_by(nodes_state, fn {node_name, state} ->
+            Enum.min_by(nodes_state, fn {_node_name, state} ->
               state.updated_at
             end)
 
@@ -102,18 +116,18 @@ defmodule ExDistributed.Leader do
           nodes_state = get_actived_nodes_state(state)
 
           leaders_stat =
-            Enum.reduce(node_state, %{}, fn {node_name, _}, acc ->
+            Enum.reduce(nodes_state, %{}, fn {node_name, _}, acc ->
               Map.update(acc, node_name, 1, &(&1 + 1))
             end)
 
           # TODO: consider two cluster has same number nodes...
           {leader, _} =
-            Enum.max_by(leaders_stat, fn {node_name, number} ->
+            Enum.max_by(leaders_stat, fn {_node_name, number} ->
               number
             end)
 
           if Node.self() == leader do
-            # new leader update the all cluster
+            # new leader update the all cluster 
             # for {node_name, _} <- nodes_state do
             #   :rpc.call(node_name, __MODULE__, :reset, [Node.self()])
             # end
@@ -134,11 +148,57 @@ defmodule ExDistributed.Leader do
     end
   end
 
-  def handle_call(:get_state, _from, state) do
-    {:reply, state, state}
+  def handle_info({:downnode, down_node}, state) do
+    nodes_state = get_actived_nodes_state(state)
+
+    nodes_status =
+      Enum.map(nodes_state, fn {_, state} ->
+        state.status
+      end)
+
+    cond do
+      @election_status in nodes_status ->
+        Logger.info("Cluster election, #{inspect(Node.self())} do nothing")
+        {:noreply, Map.put(state, :status, @election_status)}
+
+      state.leader == down_node ->
+        Logger.warn("Cluster leader #{inspect(down_node)} down, start election")
+        # TODO: elections
+        {:noreply, state}
+
+      state.leader != Node.self() ->
+        Logger.info("#{inspect(Node.self())} is not leader, pass")
+        {:noreply, state}
+
+      state.leader == Node.self() ->
+        Logger.info("Leader #{inspect(Node.self())} receive #{inspect(down_node)} down")
+        Logger.info("Leader restart the services")
+        services = ServerManager.get_node_servers(down_node)
+        start_global_servers(services)
+        {:noreply, state}
+    end
   end
 
-  def handle_cast({:reset, leader}, state) do
-    {:noreply, %{leader: leader, status: @normal_status, updated_at: Utils.current()}}
+  defp get_actived_nodes_state(cstate) do
+    NodeState.get_active_nodes()
+    |> Kernel.--([Node.self()])
+    |> Enum.map(fn node_name ->
+      node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
+      {node_name, node_state}
+    end)
+    |> Kernel.++([{Node.self(), cstate}])
+  end
+
+  @doc "Start the server between nodes"
+  def start_global_servers(servers) do
+    actived_nodes = NodeState.get_active_nodes()
+    [left | tasks] = Enum.chunk_every(servers, actived_nodes)
+    remote_actived_nodes = actived_nodes -- [Node.self()]
+
+    for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do
+      :rpc.call(node_name, ExDistributed.ServerManager, :start_servers, [servers])
+    end
+
+    ExDistributed.ServerManager.start_servers(left)
   end
 end

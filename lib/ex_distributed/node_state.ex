@@ -7,7 +7,7 @@ defmodule ExDistributed.NodeState do
   use GenServer
   require Logger
   alias ExDistributed.Leader
-  alias ExDistributed.ServerManager
+  # alias ExDistributed.ServerManager
   @nodes Application.get_env(:ex_distributed, :nodes)
   @refresh 1_000
   # client
@@ -15,22 +15,18 @@ defmodule ExDistributed.NodeState do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
-  def get_active_nodes(state) do
-    active_nodes =
-      Enum.filter(state, fn {node_name, node_state} ->
-        node_state
-      end)
-
-    Enum.map(active_nodes, fn {node_name, _} -> node_name end)
+  def get_active_nodes() do
+    GenServer.call(__MODULE__, :get_status)
+    |> Enum.filter(fn {_, node_status} ->
+      node_status
+    end)
+    |> Enum.map(fn {node_name, _} -> node_name end)
   end
 
   def get_unactive_nodes(state) do
-    unactive_nodes =
-      Enum.filter(state, fn {node_name, node_state} ->
-        node_state = false
-      end)
-
-    Enum.map(active_nodes, fn {node_name, _} -> node_name end)
+    Enum.filter(state, fn {_, node_status} ->
+      node_status == false
+    end)
   end
 
   # callback
@@ -52,20 +48,11 @@ defmodule ExDistributed.NodeState do
 
     {responses, state} =
       Enum.map_reduce(unconnected_nodes, state, fn node_name, acc ->
-        response = Node.ping(node_name)
-
-        if responses == :pang do
-          {response, acc}
-        else
-          {response, Map.put(acc, node_name, true)}
+        case Node.ping(node_name) do
+          :pang -> {:pang, acc}
+          :pong -> {:pong, Map.put(acc, node_name, true)}
         end
       end)
-
-    pang_num = Enum.find(responses, &(&1 == :pang))
-
-    if :pang in response do
-      refresh_nodes()
-    end
 
     if :pang in responses do
       refresh_nodes()
@@ -82,18 +69,18 @@ defmodule ExDistributed.NodeState do
   end
 
   @doc "Restart server when nodedown and check the leader status"
-  def handle_info({:nodedown, node_name}, state) do
-    Logger.warning("Node #{inspect(Node.self())} receive #{inspect(node_name)} down")
-    ServerManager.restart_downnode_services(node_name)
-    {:noreply, Map.put(state, node_name, false)}
+  def handle_info({:nodedown, down_node}, state) do
+    Logger.warn("Node #{inspect(Node.self())} receive #{inspect(down_node)} down")
+    Leader.check_leader_and_restart_services(down_node)
+    {:noreply, Map.put(state, down_node, false)}
   end
 
   defp refresh_nodes() do
-    Process.send_after(self, :refresh_nodes, @refresh)
+    Process.send_after(self(), :refresh_nodes, @refresh)
   end
 
   @doc "Current process listen the node up and down"
-  defp monitor_nodes() do
+  def monitor_nodes() do
     :net_kernel.monitor_nodes(true)
   end
 end
