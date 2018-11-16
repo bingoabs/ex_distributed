@@ -34,8 +34,6 @@ defmodule ExDistributed.NodeState do
 
   # callback
   def init(_) do
-    refresh_nodes()
-    monitor_nodes()
     state = Map.new(@nodes, &{&1, false})
     {:ok, Map.put(state, Node.self(), true)}
   end
@@ -56,9 +54,18 @@ defmodule ExDistributed.NodeState do
 
     state =
       Enum.reduce(nodes_name, state, fn node_name, acc ->
+        old_status = Map.get(acc, node_name)
         case Node.ping(node_name) do
-          :pang -> Map.put(acc, node_name, false)
-          :pong -> Map.put(acc, node_name, true)
+          :pang ->
+            if old_status == true do
+              emit_node_down(node_name)
+            end
+            Map.put(acc, node_name, false)
+          :pong ->
+            if old_status == false do
+              emit_node_up(node_name)
+            end
+            Map.put(acc, node_name, true)
         end
       end)
 
@@ -67,36 +74,19 @@ defmodule ExDistributed.NodeState do
   end
 
   @doc "Select new leader and refresh the nodes status"
-  def handle_info({:nodeup, node_name}, state) do
+  def emit_node_up(node_name) do
     Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_name)} up")
     LeaderClient.sync_leader(node_name)
-    {:noreply, Map.put(state, node_name, true)}
   end
 
   @doc "Restart server when nodedown and check the leader status"
-  def handle_info({:nodedown, down_node}, state) do
+  def emit_node_down(down_node) do
     Logger.warn("Node #{inspect(Node.self())} receive #{inspect(down_node)} down")
     LeaderClient.check_leader_and_restart_services(down_node)
-    {:noreply, Map.put(state, down_node, false)}
   end
-
-  def handle_info(any, state) do
-    Logger.error("donot know why this show: #{inspect(any)}")
-    Logger.error("#inspect(state)")
-    {:noreply, state}
-  end
-
-  defp refresh_nodes() do
+  @doc "Only the leader emit the contious refresh, like heart beat"
+  def refresh_nodes() do
     Logger.info("#{inspect(Node.self())} will refresh nodes again")
     Process.send_after(self(), :refresh_nodes, @refresh)
-  end
-
-  @doc "Current process listen the node up and down"
-  def monitor_nodes() do
-    for node_name <- @nodes do
-      Node.monitor(node_name, true)
-    end
-
-    # :net_kernel.monitor_nodes(true)
   end
 end
