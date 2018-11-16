@@ -12,6 +12,7 @@ defmodule ExDistributed.LeaderClient do
   alias ExDistributed.Utils
   alias ExDistributed.NodeState
   alias ExDistributed.LeaderStore
+  alias ExDistributed.LeaderClient
   alias ExDistributed.ServerManager
 
   @init_status "init"
@@ -19,19 +20,27 @@ defmodule ExDistributed.LeaderClient do
   @normal_status "normal"
 
   @doc "Available between nodes like :rpc"
-  def get_current_state(), do: LeaderStore.get()
+  def get_current_state() do
+    Logger.info("Query #{Node.self()} stat")
+    LeaderStore.get()
+  end
+
   @doc "Only leader node invoke"
-  def reset(state), do: LeaderStore.set(state)
+  def reset(state) do
+    Logger.warn("#{Node.self()} reset state: #{inspect(state)}")
+    LeaderStore.set(state)
+  end
 
   defp leader_reset_state(leader_node, nodes_name) do
     if Node.self() == leader_node do
       for node_name <- nodes_name do
         new_state = %{leader: leader_node, status: @normal_status, updated_at: Utils.current()}
+        Logger.warn("#{Node.self()} send follower #{node_name} new_state: #{inspect(new_state)}")
 
         if node_name == Node.self() do
           reset(new_state)
         else
-          :rpc.call(node_name, __MODULE__, :reset, [new_state])
+          :rpc.call(node_name, LeaderClient, :reset, [new_state])
         end
       end
     end
@@ -45,7 +54,7 @@ defmodule ExDistributed.LeaderClient do
   """
   def sync_leader(up_node) do
     # avoid to block the NodeState process
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.private_sync_leader/1, [
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, LeaderClient, :private_sync_leader, [
       up_node
     ])
   end
@@ -57,16 +66,27 @@ defmodule ExDistributed.LeaderClient do
   """
   def check_leader_and_restart_services(down_node) do
     # avoid to block the downnode status update
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/1, [down_node])
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, LeaderClient, :down_node, [down_node])
   end
 
   defp get_actived_nodes_state(cstate) do
     NodeState.get_active_nodes()
     |> Kernel.--([Node.self()])
-    |> Enum.map(fn node_name ->
-      Logger.error("do rpc: #{inspect(node_name)}")
-      node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
-      {node_name, node_state}
+    |> Enum.reduce([], fn node_name, acc ->
+      Logger.info("Node #{inspect(Node.self())} get active node #{inspect(node_name)} status")
+
+      case :rpc.call(node_name, LeaderClient, :get_current_state, []) do
+        {:badrpc, reason} ->
+          Logger.error(
+            "#{inspect(Node.self())} receive rpc call #{node_name} error: #{inspect(reason)}"
+          )
+
+          NodeState.set_status(:unconnecte, node_name)
+          acc
+
+        response ->
+          acc ++ [{node_name, response}]
+      end
     end)
     |> Kernel.++([{Node.self(), cstate}])
   end
@@ -160,7 +180,7 @@ defmodule ExDistributed.LeaderClient do
   @doc "Start the server between nodes"
   def start_global_servers(servers) do
     actived_nodes = NodeState.get_active_nodes()
-    [left | tasks] = Enum.chunk_every(servers, actived_nodes)
+    [left | tasks] = Enum.chunk_every(servers, length(actived_nodes))
     remote_actived_nodes = actived_nodes -- [Node.self()]
 
     for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do

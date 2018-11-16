@@ -5,6 +5,7 @@ defmodule ExDistributed.LeaderStore do
   """
   use GenServer
   alias ExDistributed.Utils
+  require Logger
   @init_status "init"
 
   def start_link(_) do
@@ -13,11 +14,13 @@ defmodule ExDistributed.LeaderStore do
 
   @doc "Only used in same node"
   def set(state) do
+    Logger.warn("#{Node.self()} set leader_store state: #{inspect(state)}")
     GenServer.cast(__MODULE__, {:set, state})
   end
 
   @doc "Available between nodes like :rpc"
   def get() do
+    Logger.info("#{Node.self()} get leader_sotre state")
     GenServer.call(__MODULE__, :get)
   end
 

@@ -23,11 +23,13 @@ defmodule ExDistributed.NodeState do
     |> Enum.map(fn {node_name, _} -> node_name end)
   end
 
-  def get_unactive_nodes(state) do
-    Enum.filter(state, fn {_, node_status} ->
-      node_status == false
-    end)
-    |> Enum.map(fn {node_name, _} -> node_name end)
+  def get_nodes_name(state) do
+    Enum.map(state, fn {node_name, _} -> node_name end)
+  end
+
+  def set_status(:unconnecte, node_name) do
+    Logger.info("Node #{Node.self()} set #{inspect(node_name)} unconnected")
+    GenServer.cast(__MODULE__, {:unconnecte, node_name})
   end
 
   # callback
@@ -42,23 +44,25 @@ defmodule ExDistributed.NodeState do
     {:reply, state, state}
   end
 
+  def handle_cast({:unconnecte, node_name}, state) do
+    {:noreply, Map.put(state, node_name, false)}
+  end
+
   @doc "Ping the unconnected nodes"
   def handle_info(:refresh_nodes, state) do
-    unconnected_nodes = get_unactive_nodes(state)
-    Logger.info("Node #{inspect(Node.self())} refresh nodes: #{inspect(unconnected_nodes)}")
+    Logger.info("#{inspect(Node.self())} state: #{inspect(state)}")
+    nodes_name = get_nodes_name(state)
+    Logger.info("Node #{inspect(Node.self())} refresh nodes: #{inspect(nodes_name)}")
 
-    {responses, state} =
-      Enum.map_reduce(unconnected_nodes, state, fn node_name, acc ->
+    state =
+      Enum.reduce(nodes_name, state, fn node_name, acc ->
         case Node.ping(node_name) do
-          :pang -> {:pang, acc}
-          :pong -> {:pong, Map.put(acc, node_name, true)}
+          :pang -> Map.put(acc, node_name, false)
+          :pong -> Map.put(acc, node_name, true)
         end
       end)
 
-    if :pang in responses do
-      refresh_nodes()
-    end
-
+    refresh_nodes()
     {:noreply, state}
   end
 
@@ -76,12 +80,23 @@ defmodule ExDistributed.NodeState do
     {:noreply, Map.put(state, down_node, false)}
   end
 
+  def handle_info(any, state) do
+    Logger.error("donot know why this show: #{inspect(any)}")
+    Logger.error("#inspect(state)")
+    {:noreply, state}
+  end
+
   defp refresh_nodes() do
+    Logger.info("#{inspect(Node.self())} will refresh nodes again")
     Process.send_after(self(), :refresh_nodes, @refresh)
   end
 
   @doc "Current process listen the node up and down"
   def monitor_nodes() do
-    :net_kernel.monitor_nodes(true)
+    for node_name <- @nodes do
+      Node.monitor(node_name, true)
+    end
+
+    # :net_kernel.monitor_nodes(true)
   end
 end
