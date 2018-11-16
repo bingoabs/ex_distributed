@@ -5,6 +5,9 @@ defmodule ExDistributed.LeaderStore do
   """
   use GenServer
   alias ExDistributed.Utils
+  @init_status "init"
+  @election_status "election"
+  @normal_status "normal"
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)

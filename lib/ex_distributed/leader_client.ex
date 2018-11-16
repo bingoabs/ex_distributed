@@ -18,23 +18,26 @@ defmodule ExDistributed.LeaderClient do
   @init_status "init"
   @election_status "election"
   @normal_status "normal"
-  @update_leader_delay 1_000
-  @down_delay 1_000
 
-  @doc "Only used in same node"
-  def reset(state), do: LeaderStore.set(state)
   @doc "Available between nodes like :rpc"
   def get_current_state(), do: LeaderStore.get()
-  def get_current_leader(), do: LeaderStore.get()[:leader]
+  @doc "Only leader node invoke"
+  def reset(state), do: LeaderStore.set(state)
+  @doc "Wrapper function for usage"
+  defp get_current_leader(), do: LeaderStore.get()[:leader]
 
-  @doc """
-  To follower downnode, leader will do somethin
-  if leader download, then into election
-  after election, leader will update node servers in cluster
-  """
-  def check_leader_and_restart_services(down_node) do
-    # avoid to block the downnode status update
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/2, [down_node])
+  defp leader_reset_state(leader_node, nodes_name) do
+    if Node.self() == leader_node do
+      for node_name <- nodes_name do
+        new_state = %{leader: leader_node, status: @normal_status, updated_at: Utils.current()}
+
+        if node_name == Node.self() do
+          reset(new_state)
+        else
+          :rpc.call(node_name, __MODULE__, :reset, [new_state])
+        end
+      end
+    end
   end
 
   @doc """
@@ -48,89 +51,86 @@ defmodule ExDistributed.LeaderClient do
     Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.sync_leader/2, [up_node])
   end
 
-  def handle_info({:sync_leader, up_node}, state) do
-    cond do
-      state.status == @init_status ->
-        # 1. init status two node how to set leader
-        # 2. a new node join a stable cluster that already has a leader
-        # 3. consider node up when election is running
-        Logger.error("start get actived nodes: #{inspect(state)}")
-        nodes_state = get_actived_nodes_state(state)
-        Logger.error("get actived nodes: #{inspect(nodes_state)}")
+  @doc """
+  To follower downnode, leader will do somethin
+  if leader download, then into election
+  after election, leader will update node servers in cluster
+  """
+  def check_leader_and_restart_services(down_node) do
+    # avoid to block the downnode status update
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/2, [down_node])
+  end
 
-        nodes_status =
-          Enum.map(nodes_state, fn {_, state} ->
-            state.status
+  defp get_actived_nodes_state(cstate) do
+    NodeState.get_active_nodes()
+    |> Kernel.--([Node.self()])
+    |> Enum.map(fn node_name ->
+      Logger.error("do rpc: #{inspect(node_name)}")
+      node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
+      {node_name, node_state}
+    end)
+    |> Kernel.++([{Node.self(), cstate}])
+  end
+
+  defp get_max_follower_leader(nodes_state) do
+    Enum.reduce(nodes_state, %{}, fn {node_name, _}, acc ->
+      Map.update(acc, node_name, 1, &(&1 + 1))
+    end)
+    |> Enum.max_by(fn {_node_name, number} ->
+      number
+    end)
+    |> elem(0)
+  end
+
+  @doc """
+  In cluster init status, select the first started node as leader
+  If a init node join the stable cluster, the leader will set the state
+  If a init node join the cluster that in election, stop and wait the 
+    election stop new leader will set the nodes state after election
+  If a normal status node join cluster(due to the internet issue 
+    the cluster divides two or more sub-clusters then after issue fixed)
+    Now exists more than one leader, so each leader will count the follower
+    number, the max follower one wins(It will work fine, if less half of nodes down)
+    Current version ignore the election situation.
+    <!-- TODO: If cluster in election, wait new leader set the state
+    other situations just find the main leader and the main leader 
+    set the cluster status -->
+  """
+  defp sync_leader(up_node) do
+    state = get_current_state()
+    nodes_state = get_actived_nodes_state(state)
+
+    nodes_status =
+      Enum.map(nodes_state, fn {_, state} ->
+        state.status
+      end)
+
+    cluster_in_init = Enum.all?(nodes_status, &(&1 == @init_status))
+
+    cond do
+      state.status == @init_status and cluster_in_init ->
+        Logger.info("Node #{Node.self()} finds the cluster is init")
+        Logger.info("Node #{Node.self()} selects first node as leader")
+
+        {leader_node, _} =
+          Enum.min_by(nodes_state, fn {_node_name, state} ->
+            state.updated_at
           end)
 
-        if Enum.all?(nodes_status, &(&1 == @init_status)) do
-          Logger.info("Node #{Node.self()} finds the cluster is init")
-          Logger.info("Node #{Node.self()} selects first node as leader")
-
-          {leader_node, _} =
-            Enum.min_by(nodes_state, fn {_node_name, state} ->
-              state.updated_at
-            end)
-
-          if Node.self() == leader_node do
-            for {node_name, _} <- nodes_state do
-              :rpc.call(node_name, __MODULE__, :reset, [Node.self()])
-            end
-          end
-
-          {:noreply,
-           %{
-             leader: leader_node,
-             status: @normal_status,
-             updated_at: Utils.current()
-           }}
-        else
-          # except cluster all init case, other situation the leader will
-          # update the new up node
-          {:noreply, state}
-        end
+        nodes = Enum.map(nodes_state, &elem(&1, 0))
+        leader_reset_state(leader_node, nodes)
 
       state.status == @normal_status ->
-        if state.leader == Node.self() do
-          # after the init status, due to the internet issue
-          # the cluster divided two or more sub-cluster
-          # then after issue fixed, the leaders in all cluster need 
-          # do something
-          nodes_state = get_actived_nodes_state(state)
+        leader = get_max_follower_leader(nodes_state)
+        leader_reset_state(leader, [up_node])
 
-          leaders_stat =
-            Enum.reduce(nodes_state, %{}, fn {node_name, _}, acc ->
-              Map.update(acc, node_name, 1, &(&1 + 1))
-            end)
-
-          # TODO: consider two cluster has same number nodes...
-          {leader, _} =
-            Enum.max_by(leaders_stat, fn {_node_name, number} ->
-              number
-            end)
-
-          if Node.self() == leader do
-            # for {node_name, _} <- nodes_state do
-            #   :rpc.call(node_name, __MODULE__, :reset, [Node.self()])
-            # end
-
-            # or due to the new up node will notify
-            # so once update one new up node
-            :rpc.call(up_node, __MODULE__, :reset, [Node.self()])
-          end
-
-          {:noreply, Map.put(state, :leader, leader)}
-        else
-          {:noreply, state}
-        end
-
-      # In election status, ignore the update command
       true ->
-        {:noreply, state}
+        :ok
     end
   end
 
-  def handle_info({:downnode, down_node}, state) do
+  def down_node(down_node) do
+    state = get_current_state()
     nodes_state = get_actived_nodes_state(state)
 
     nodes_status =
@@ -141,7 +141,6 @@ defmodule ExDistributed.LeaderClient do
     cond do
       @election_status in nodes_status ->
         Logger.info("Cluster election, #{inspect(Node.self())} do nothing")
-        {:noreply, Map.put(state, :status, @election_status)}
 
       state.leader == down_node ->
         Logger.warn("Cluster leader #{inspect(down_node)} down, start election")
@@ -159,17 +158,6 @@ defmodule ExDistributed.LeaderClient do
         start_global_servers(services)
         {:noreply, state}
     end
-  end
-
-  defp get_actived_nodes_state(cstate) do
-    NodeState.get_active_nodes()
-    |> Kernel.--([Node.self()])
-    |> Enum.map(fn node_name ->
-      Logger.error("do rpc: #{inspect(node_name)}")
-      node_state = :rpc.call(node_name, __MODULE__, :get_current_state, [])
-      {node_name, node_state}
-    end)
-    |> Kernel.++([{Node.self(), cstate}])
   end
 
   @doc "Start the server between nodes"
