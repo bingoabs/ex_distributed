@@ -142,21 +142,19 @@ defmodule ExDistributed.LeaderClient do
       @election_status in nodes_status ->
         Logger.info("Cluster election, #{inspect(Node.self())} do nothing")
 
-      state.leader == down_node ->
-        Logger.warn("Cluster leader #{inspect(down_node)} down, start election")
-        # TODO: elections
-        {:noreply, state}
-
       state.leader != Node.self() ->
         Logger.info("#{inspect(Node.self())} is not leader, pass")
-        {:noreply, state}
+
+      state.leader == down_node ->
+        Logger.warn("Cluster leader #{inspect(down_node)} down, start election")
+
+      # TODO: do elections
 
       state.leader == Node.self() ->
         Logger.info("Leader #{inspect(Node.self())} receive #{inspect(down_node)} down")
         Logger.info("Leader restart the services")
         services = ServerManager.get_node_servers(down_node)
         start_global_servers(services)
-        {:noreply, state}
     end
   end
 
