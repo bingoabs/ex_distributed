@@ -12,8 +12,7 @@ defmodule ExDistributed.Application do
       # {ExDistributed.Worker, arg},
       {ExDistributed.NodeState, []},
       {ExDistributed.LeaderStore, []},
-      {ExDistributed.ServerManager, []},
-      {Task.Supervisor, name: ExDistributed.TaskSupervisor}
+      {ExDistributed.ServerManager, []}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

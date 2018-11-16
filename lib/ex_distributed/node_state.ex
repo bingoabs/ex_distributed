@@ -10,6 +10,7 @@ defmodule ExDistributed.NodeState do
   # alias ExDistributed.ServerManager
   @nodes Application.get_env(:ex_distributed, :nodes)
   @refresh 1_000
+  @max_refresh 60_000
   # client
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -49,7 +50,7 @@ defmodule ExDistributed.NodeState do
   end
 
   @doc "Ping the unconnected nodes"
-  def handle_info(:refresh_nodes, state) do
+  def handle_info({:refresh_nodes, timeout}, state) do
     Logger.info("#{inspect(Node.self())} state: #{inspect(state)}")
     nodes_name = get_nodes_name(state)
     Logger.info("Node #{inspect(Node.self())} refresh nodes: #{inspect(nodes_name)}")
@@ -62,41 +63,44 @@ defmodule ExDistributed.NodeState do
         end
       end)
 
-    refresh_nodes()
+    if Enum.all?(state, fn {_, status} -> status end) do
+      timeout = timeout * 2
+
+      if timeout > @max_refresh do
+        refresh_nodes(@max_refresh)
+      else
+        refresh_nodes(timeout)
+      end
+    else
+      refresh_nodes()
+    end
+
     {:noreply, state}
   end
 
   @doc "Select new leader and refresh the nodes status"
-  def handle_info({:nodeup, node_name}, state) do
-    Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_name)} up")
-    LeaderClient.sync_leader(node_name)
-    {:noreply, Map.put(state, node_name, true)}
+  def handle_info({:nodeup, node_up}, state) do
+    Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_up)} up")
+    # avoid to block the downnode status update
+    Task.start(LeaderClient, :sync_leader, [node_up])
+    {:noreply, Map.put(state, node_up, true)}
   end
 
   @doc "Restart server when nodedown and check the leader status"
   def handle_info({:nodedown, down_node}, state) do
     Logger.warn("Node #{inspect(Node.self())} receive #{inspect(down_node)} down")
-    LeaderClient.check_leader_and_restart_services(down_node)
+    # avoid to block the NodeState process
+    Task.start(LeaderClient, :down_node, [down_node])
     {:noreply, Map.put(state, down_node, false)}
   end
 
-  def handle_info(any, state) do
-    Logger.error("donot know why this show: #{inspect(any)}")
-    Logger.error("#inspect(state)")
-    {:noreply, state}
-  end
-
-  defp refresh_nodes() do
+  defp refresh_nodes(timeout \\ @refresh) do
     Logger.info("#{inspect(Node.self())} will refresh nodes again")
-    Process.send_after(self(), :refresh_nodes, @refresh)
+    Process.send_after(self(), {:refresh_nodes, timeout}, timeout)
   end
 
   @doc "Current process listen the node up and down"
   def monitor_nodes() do
-    for node_name <- @nodes do
-      Node.monitor(node_name, true)
-    end
-
-    # :net_kernel.monitor_nodes(true)
+    :net_kernel.monitor_nodes(true)
   end
 end

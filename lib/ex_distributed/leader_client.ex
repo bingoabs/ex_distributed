@@ -36,37 +36,13 @@ defmodule ExDistributed.LeaderClient do
       for node_name <- nodes_name do
         new_state = %{leader: leader_node, status: @normal_status, updated_at: Utils.current()}
         Logger.warn("#{Node.self()} send follower #{node_name} new_state: #{inspect(new_state)}")
-
-        if node_name == Node.self() do
-          reset(new_state)
-        else
-          :rpc.call(node_name, LeaderClient, :reset, [new_state])
-        end
+        :rpc.call(node_name, ExDistributed.LeaderClient, :reset, [new_state])
       end
+    else
+      new_state = :rpc.call(leader_node, ExDistributed.LeaderClient, :get_current_state, [])
+      Logger.warn("#{Node.self()} receive #{inspect(new_state)} from #{leader_node}")
+      reset(new_state)
     end
-  end
-
-  @doc """
-  if in election status, then ignore the command;
-  if init/normal status, then query other nodes status:
-    exist election status -> then wait until election finish, then update leader
-    all init or normal status -> start a election
-  """
-  def sync_leader(up_node) do
-    # avoid to block the NodeState process
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, LeaderClient, :private_sync_leader, [
-      up_node
-    ])
-  end
-
-  @doc """
-  To follower downnode, leader will do somethin
-  if leader download, then into election
-  after election, leader will update node servers in cluster
-  """
-  def check_leader_and_restart_services(down_node) do
-    # avoid to block the downnode status update
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, LeaderClient, :down_node, [down_node])
   end
 
   defp get_actived_nodes_state(cstate) do
@@ -75,7 +51,7 @@ defmodule ExDistributed.LeaderClient do
     |> Enum.reduce([], fn node_name, acc ->
       Logger.info("Node #{inspect(Node.self())} get active node #{inspect(node_name)} status")
 
-      case :rpc.call(node_name, LeaderClient, :get_current_state, []) do
+      case :rpc.call(node_name, ExDistributed.LeaderClient, :get_current_state, []) do
         {:badrpc, reason} ->
           Logger.error(
             "#{inspect(Node.self())} receive rpc call #{node_name} error: #{inspect(reason)}"
@@ -91,9 +67,13 @@ defmodule ExDistributed.LeaderClient do
     |> Kernel.++([{Node.self(), cstate}])
   end
 
-  defp get_max_follower_leader(nodes_state) do
-    Enum.reduce(nodes_state, %{}, fn {node_name, _}, acc ->
-      Map.update(acc, node_name, 1, &(&1 + 1))
+  defp get_max_normal_follower_leader(nodes_state) do
+    Enum.reduce(nodes_state, %{}, fn {node_name, state}, acc ->
+      if state.status != @init_status do
+        Map.update(acc, node_name, 1, &(&1 + 1))
+      else
+        acc
+      end
     end)
     |> Enum.max_by(fn {_node_name, number} ->
       number
@@ -115,7 +95,7 @@ defmodule ExDistributed.LeaderClient do
     other situations just find the main leader and the main leader 
     set the cluster status -->
   """
-  def private_sync_leader(up_node) do
+  def sync_leader(up_node) do
     state = get_current_state()
     nodes_state = get_actived_nodes_state(state)
 
@@ -139,8 +119,9 @@ defmodule ExDistributed.LeaderClient do
         nodes = Enum.map(nodes_state, &elem(&1, 0))
         leader_reset_state(leader_node, nodes)
 
-      state.status == @normal_status ->
-        leader = get_max_follower_leader(nodes_state)
+      state.status in [@init_status, @normal_status] ->
+        leader = get_max_normal_follower_leader(nodes_state)
+        Logger.info("Init status #{Node.self()} checkout leader: #{leader}")
         leader_reset_state(leader, [up_node])
 
       true ->
@@ -178,13 +159,17 @@ defmodule ExDistributed.LeaderClient do
   end
 
   @doc "Start the server between nodes"
+  def start_global_servers([]) do
+    Logger.info("Down node not services")
+  end
+
   def start_global_servers(servers) do
     actived_nodes = NodeState.get_active_nodes()
     [left | tasks] = Enum.chunk_every(servers, length(actived_nodes))
     remote_actived_nodes = actived_nodes -- [Node.self()]
 
     for {node_name, servers} <- Enum.zip(remote_actived_nodes, tasks) do
-      :rpc.call(node_name, ServerManager, :start_servers, [servers])
+      :rpc.call(node_name, ExDistributed.ServerManager, :start_servers, [servers])
     end
 
     ServerManager.start_servers(left)
