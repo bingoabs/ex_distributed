@@ -8,7 +8,6 @@ defmodule ExDistributed.LeaderClient do
   2. other node down , leader assigns the downed servers 
     to existed nodes
   """
-  use GenServer
   require Logger
   alias ExDistributed.Utils
   alias ExDistributed.NodeState
@@ -23,8 +22,6 @@ defmodule ExDistributed.LeaderClient do
   def get_current_state(), do: LeaderStore.get()
   @doc "Only leader node invoke"
   def reset(state), do: LeaderStore.set(state)
-  @doc "Wrapper function for usage"
-  defp get_current_leader(), do: LeaderStore.get()[:leader]
 
   defp leader_reset_state(leader_node, nodes_name) do
     if Node.self() == leader_node do
@@ -48,7 +45,9 @@ defmodule ExDistributed.LeaderClient do
   """
   def sync_leader(up_node) do
     # avoid to block the NodeState process
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.sync_leader/2, [up_node])
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.private_sync_leader/1, [
+      up_node
+    ])
   end
 
   @doc """
@@ -58,7 +57,7 @@ defmodule ExDistributed.LeaderClient do
   """
   def check_leader_and_restart_services(down_node) do
     # avoid to block the downnode status update
-    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/2, [down_node])
+    Task.Supervisor.async(ExDistributed.TaskSupervisor, &__MODULE__.down_node/1, [down_node])
   end
 
   defp get_actived_nodes_state(cstate) do
@@ -96,7 +95,7 @@ defmodule ExDistributed.LeaderClient do
     other situations just find the main leader and the main leader 
     set the cluster status -->
   """
-  defp sync_leader(up_node) do
+  def private_sync_leader(up_node) do
     state = get_current_state()
     nodes_state = get_actived_nodes_state(state)
 

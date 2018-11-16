@@ -6,8 +6,6 @@ defmodule ExDistributed.LeaderStore do
   use GenServer
   alias ExDistributed.Utils
   @init_status "init"
-  @election_status "election"
-  @normal_status "normal"
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -24,7 +22,7 @@ defmodule ExDistributed.LeaderStore do
   end
 
   # callback
-  def __init__(_) do
+  def init(_) do
     {:ok,
      %{
        leader: Node.self(),
@@ -34,7 +32,7 @@ defmodule ExDistributed.LeaderStore do
      }}
   end
 
-  def handle_cast({:set, new_state}, old_state) do
+  def handle_cast({:set, new_state}, _old_state) do
     {:noreply, new_state}
   end
 
