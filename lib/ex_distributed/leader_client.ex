@@ -12,17 +12,32 @@ defmodule ExDistributed.LeaderClient do
   alias ExDistributed.Utils
   alias ExDistributed.NodeState
   alias ExDistributed.LeaderStore
-  alias ExDistributed.LeaderClient
   alias ExDistributed.ServerManager
 
   @init_status "init"
   @election_status "election"
   @normal_status "normal"
+  @wait_vote 1_000
 
   @doc "Available between nodes like :rpc"
   def get_current_state() do
     Logger.info("Query #{Node.self()} stat")
     LeaderStore.get()
+  end
+
+  @doc "the follower nodes invoked"
+  def election(election_status, sender) do
+    success = LeaderStore.into_election(election_status)
+
+    if success do
+      :rpc.call(sender, ExDistributed.LeaderClient, :add_ticket, [])
+    end
+  end
+
+  def add_ticket() do
+    LeaderStore.get()
+    |> Map.update(:ticket, 1, &(&1 + 1))
+    |> reset()
   end
 
   @doc "Only leader node invoke"
@@ -34,7 +49,14 @@ defmodule ExDistributed.LeaderClient do
   defp leader_reset_state(leader_node, nodes_name) do
     if Node.self() == leader_node do
       for node_name <- nodes_name do
-        new_state = %{leader: leader_node, status: @normal_status, updated_at: Utils.current()}
+        new_state = %{
+          leader: leader_node,
+          status: @normal_status,
+          updated_at: Utils.current(),
+          voted: false,
+          ticket: 0
+        }
+
         Logger.warn("#{Node.self()} send follower #{node_name} new_state: #{inspect(new_state)}")
         :rpc.call(node_name, ExDistributed.LeaderClient, :reset, [new_state])
       end
@@ -49,13 +71,11 @@ defmodule ExDistributed.LeaderClient do
     NodeState.get_active_nodes()
     |> Kernel.--([Node.self()])
     |> Enum.reduce([], fn node_name, acc ->
-      Logger.info("Node #{inspect(Node.self())} get active node #{inspect(node_name)} status")
+      Logger.info("Node #{Node.self()} get active node #{node_name} status")
 
       case :rpc.call(node_name, ExDistributed.LeaderClient, :get_current_state, []) do
         {:badrpc, reason} ->
-          Logger.error(
-            "#{inspect(Node.self())} receive rpc call #{node_name} error: #{inspect(reason)}"
-          )
+          Logger.error("#{Node.self()} receive rpc call #{node_name} error: #{inspect(reason)}")
 
           NodeState.set_status(:unconnecte, node_name)
           acc
@@ -140,18 +160,46 @@ defmodule ExDistributed.LeaderClient do
 
     cond do
       @election_status in nodes_status ->
-        Logger.info("Cluster election, #{inspect(Node.self())} do nothing")
-
-      state.leader != Node.self() ->
-        Logger.info("#{inspect(Node.self())} is not leader, pass")
+        Logger.info("Cluster election, #{Node.self()} do nothing")
 
       state.leader == down_node ->
-        Logger.warn("Cluster leader #{inspect(down_node)} down, start election")
+        Logger.warn("Cluster leader #{down_node} down, start election")
+        # first vote self and set the status to election-status
+        election = %{
+          leader: nil,
+          status: @election_status,
+          updated_at: Utils.current(),
+          voted: true,
+          ticket: 1
+        }
 
-      # TODO: do elections
+        reset(election)
+
+        for {node_name, _} <- nodes_state do
+          if node_name != Node.self() do
+            :rpc.call(node_name, ExDistributed.LeaderClient, :election, [election, Node.self()])
+          end
+        end
+
+        :timer.sleep(@wait_vote)
+        state = get_current_state()
+        nodes_state = get_actived_nodes_state(state)
+
+        {leader, _} =
+          Enum.max_by(nodes_state, fn {_node_name, node_state} ->
+            node_state.ticket
+          end)
+
+        Logger.warn("#{Node.self()} checkout leader #{leader}")
+
+        if leader == Node.self() do
+          state = get_current_state()
+          nodes_state = get_actived_nodes_state(state)
+          leader_reset_state(leader, nodes_state)
+        end
 
       state.leader == Node.self() ->
-        Logger.info("Leader #{inspect(Node.self())} receive #{inspect(down_node)} down")
+        Logger.info("Leader #{Node.self()} receive #{down_node} down")
         Logger.info("Leader restart the services")
         services = ServerManager.get_node_servers(down_node)
         start_global_servers(services)

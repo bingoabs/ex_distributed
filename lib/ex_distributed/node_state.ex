@@ -29,7 +29,7 @@ defmodule ExDistributed.NodeState do
   end
 
   def set_status(:unconnecte, node_name) do
-    Logger.info("Node #{Node.self()} set #{inspect(node_name)} unconnected")
+    Logger.info("Node #{Node.self()} set #{node_name} unconnected")
     GenServer.cast(__MODULE__, {:unconnecte, node_name})
   end
 
@@ -51,9 +51,9 @@ defmodule ExDistributed.NodeState do
 
   @doc "Ping the unconnected nodes"
   def handle_info({:refresh_nodes, timeout}, state) do
-    Logger.info("#{inspect(Node.self())} state: #{inspect(state)}")
+    Logger.info("#{Node.self()} records nodes state: #{inspect(state)}")
     nodes_name = get_nodes_name(state)
-    Logger.info("Node #{inspect(Node.self())} refresh nodes: #{inspect(nodes_name)}")
+    Logger.info("#{Node.self()} refresh nodes: #{inspect(nodes_name)}")
 
     state =
       Enum.reduce(nodes_name, state, fn node_name, acc ->
@@ -80,7 +80,7 @@ defmodule ExDistributed.NodeState do
 
   @doc "Select new leader and refresh the nodes status"
   def handle_info({:nodeup, node_up}, state) do
-    Logger.info("Node #{inspect(Node.self())} receive #{inspect(node_up)} up")
+    Logger.info("#{Node.self()} receive #{node_up} up")
     # avoid to block the downnode status update
     Task.start(LeaderClient, :sync_leader, [node_up])
     {:noreply, Map.put(state, node_up, true)}
@@ -88,14 +88,14 @@ defmodule ExDistributed.NodeState do
 
   @doc "Restart server when nodedown and check the leader status"
   def handle_info({:nodedown, down_node}, state) do
-    Logger.warn("Node #{inspect(Node.self())} receive #{inspect(down_node)} down")
+    Logger.warn("#{Node.self()} receive #{down_node} down")
     # avoid to block the NodeState process
     Task.start(LeaderClient, :down_node, [down_node])
     {:noreply, Map.put(state, down_node, false)}
   end
 
   defp refresh_nodes(timeout \\ @refresh) do
-    Logger.info("#{inspect(Node.self())} will refresh nodes again")
+    Logger.info("#{Node.self()} will refresh nodes again")
     Process.send_after(self(), {:refresh_nodes, timeout}, timeout)
   end
 
